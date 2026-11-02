@@ -20,20 +20,28 @@ runs:
       run: python3 "$GITHUB_ACTION_PATH/package_links.py"
     - name: External links are alive
       if: inputs.check-dead-links == 'true'
-      uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-      with:
-        fail: true
-        args: >-
-          --no-progress
-          --scheme https --scheme http
-          --root-dir "${{ github.workspace }}"
-          --exclude-path third_party
-          --max-retries 4 --retry-wait-time 5 --timeout 30
-          --max-concurrency 8
-          --accept 200..=299,403,429
-          --exclude-loopback --exclude-private --exclude-link-local
-          --exclude '^https?://(www\.)?example\.(com|org)'
-          --exclude '^https?://github\.com/.*/(edit|compare|new)/'
-          ${{ inputs.link-excludes }}
-          --exclude-path node_modules --exclude-path target --exclude-path CHANGELOG.md
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        LYCHEE_VERSION: "0.24.2"
+        LYCHEE_SHA256: 73657a111819a30c47c08352896796f23d64e4eb2b3ed39b6d32149241566fc5
+      run: |
+        set -euo pipefail
+        tmp="$RUNNER_TEMP/lychee"; mkdir -p "$tmp"
+        tarball="$tmp/lychee.tar.gz"
+        curl -fsSL --retry 4 --retry-all-errors -o "$tarball" \
+          "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-musl.tar.gz"
+        echo "${LYCHEE_SHA256}  $tarball" | sha256sum -c -
+        tar xzf "$tarball" -C "$tmp" --strip-components=1
+        "$tmp/lychee" --no-progress \
+          --scheme https --scheme http \
+          --root-dir "$GITHUB_WORKSPACE" \
+          --max-retries 4 --retry-wait-time 5 --timeout 30 --max-concurrency 8 \
+          --accept '200..=299,403,429' \
+          --exclude-loopback --exclude-private --exclude-link-local \
+          --exclude '^https?://(www\.)?example\.(com|org)' \
+          --exclude '^https?://github\.com/.*/(edit|compare|new)/' \
+          --exclude-path node_modules --exclude-path target --exclude-path third_party \
+          --exclude-path CHANGELOG.md \
+          ${{ inputs.link-excludes }} \
           ${{ inputs.link-paths }}
