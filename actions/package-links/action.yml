@@ -1,0 +1,37 @@
+name: Package and dead-link lint
+description: >
+  Fails when a file links to docs.rs, crates.io, npm or PyPI pages for a package that
+  is not published, then checks external URLs in site/docs/README files for dead links.
+inputs:
+  link-paths:
+    description: Space-separated globs for the external dead-link check.
+    default: "'./**/*.md' './site/**/*.html' './site/**/*.astro' './site/**/*.mdx'"
+  link-excludes:
+    description: Extra lychee arguments, e.g. --exclude '^https://internal\.'
+    default: ""
+  check-dead-links:
+    description: Set to "false" to run only the package-link check.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Package links point at published packages
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/package_links.py"
+    - name: External links are alive
+      if: inputs.check-dead-links == 'true'
+      uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+      with:
+        fail: true
+        args: >-
+          --no-progress
+          --scheme https --scheme http
+          --max-retries 4 --retry-wait-time 5 --timeout 30
+          --max-concurrency 8
+          --accept 200..=299,403,429
+          --exclude-loopback --exclude-private --exclude-link-local
+          --exclude '^https?://(www\.)?example\.(com|org)'
+          --exclude '^https?://github\.com/.*/(edit|compare|new)/'
+          ${{ inputs.link-excludes }}
+          --exclude-path node_modules --exclude-path target --exclude-path CHANGELOG.md
+          ${{ inputs.link-paths }}
