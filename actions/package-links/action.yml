@@ -26,6 +26,8 @@ runs:
         args: >-
           --no-progress
           --scheme https --scheme http
+          --root-dir "${{ github.workspace }}"
+          --exclude-path third_party
           --max-retries 4 --retry-wait-time 5 --timeout 30
           --max-concurrency 8
           --accept 200..=299,403,429
