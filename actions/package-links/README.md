@@ -9,7 +9,12 @@ A composite action used by every moonbase2090 repo.
    not a failure. Packages in the repo with `publish = false` or `"private": true` fail without a
    network call. Silence one line with `package-links: ignore`.
 2. **Dead links** (lychee 0.24.2, downloaded and checksum-verified, so no third-party action is needed): external `http(s)` URLs in Markdown and `site/` must resolve.
-   403 and 429 count as alive, loopback/private hosts are skipped, and requests are retried.
+   403 and 429 count as alive and loopback/private hosts are skipped. lychee does not retry a
+   5xx answer, so `recheck_links.py` reads its JSON report and asks again for every link that
+   answered 500, 502, 503 or 504, in rounds 2, 4, 8 and 16 seconds apart. A github.com page that
+   still answers 5xx after that is a warning, because GitHub answers bursts of page requests from
+   CI with 503; a 404, a timeout, or a 5xx from any other host fails the check.
+   Tests: `python3 -m unittest discover -s actions/package-links/tests`.
 
 ```yaml
 - uses: actions/checkout@<sha>
