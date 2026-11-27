@@ -33,23 +33,24 @@ runs:
           "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-musl.tar.gz"
         echo "${LYCHEE_SHA256}  $tarball" | sha256sum -c -
         tar xzf "$tarball" -C "$tmp" --strip-components=1
+        # The checker: the first pass and every retry use exactly this command.
+        checker=("$tmp/lychee" --no-progress
+          --scheme https --scheme http
+          --root-dir "$GITHUB_WORKSPACE"
+          --max-retries 4 --retry-wait-time 5 --timeout 30 --max-concurrency 8
+          --accept '200..=299,403,429'
+          --exclude-loopback --exclude-private --exclude-link-local
+          --exclude '^https?://(www\.)?example\.(com|org)'
+          --exclude '^https?://github\.com/.*/(edit|compare|new)/'
+          --exclude-path node_modules --exclude-path target --exclude-path third_party
+          --exclude-path CHANGELOG.md
+          ${{ inputs.link-excludes }})
         # lychee does not retry a 5xx answer; recheck_links.py asks again with backoff.
         report="$tmp/report.json"
         status=0
-        "$tmp/lychee" --no-progress --format json --output "$report" \
-          --scheme https --scheme http \
-          --root-dir "$GITHUB_WORKSPACE" \
-          --max-retries 4 --retry-wait-time 5 --timeout 30 --max-concurrency 8 \
-          --accept '200..=299,403,429' \
-          --exclude-loopback --exclude-private --exclude-link-local \
-          --exclude '^https?://(www\.)?example\.(com|org)' \
-          --exclude '^https?://github\.com/.*/(edit|compare|new)/' \
-          --exclude-path node_modules --exclude-path target --exclude-path third_party \
-          --exclude-path CHANGELOG.md \
-          ${{ inputs.link-excludes }} \
-          ${{ inputs.link-paths }} || status=$?
+        "${checker[@]}" --format json --output "$report" ${{ inputs.link-paths }} || status=$?
         # 2 means some links failed; any other non-zero status is a lychee error.
         case "$status" in
-          0|2) python3 "$GITHUB_ACTION_PATH/recheck_links.py" "$report" ;;
+          0|2) python3 "$GITHUB_ACTION_PATH/recheck_links.py" "$report" "${checker[@]}" ;;
           *) exit "$status" ;;
         esac

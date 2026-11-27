@@ -3,53 +3,68 @@
 
 lychee 0.24 reports a 5xx answer from the first request and does not retry it. This
 reads lychee's JSON report (`--format json --output FILE`) and asks again for every
-URL that answered 500, 502, 503 or 504, in rounds that wait longer each time.
+link whose entry answered 500, 502, 503 or 504, in rounds that wait longer each time.
+Each retry runs the same lychee command as the first check, one link at a time, so
+the same accepted statuses, exclusions (private, loopback, link-local) and redirect
+handling apply.
 
-The run fails on any link that is still broken afterwards, with one exception: a
+The run fails on any entry that is still broken afterwards, with one exception: a
 github.com page that keeps answering 5xx is reported as a warning. GitHub answers a
 burst of page requests from CI runners with 503 while the page exists; a page that
-is gone answers 404, which still fails. Timeouts and every other status still fail.
+is gone answers 404, which still fails. Timeouts and every other status still fail,
+each judged by its own entry in the report.
 
-Usage: recheck_links.py REPORT.json
+Usage: recheck_links.py REPORT.json LYCHEE [LYCHEE OPTIONS...]
+The lychee options are the first check's options without its inputs.
 """
-import json, sys, time, urllib.error, urllib.request
+import json, os, subprocess, sys, tempfile, time
 from urllib.parse import urlsplit
 
 TRANSIENT = {500, 502, 503, 504}
-ALIVE = set(range(200, 300)) | {403, 429}  # the statuses the lychee step accepts
+PASSED = "passed"
 LENIENT_HOSTS = frozenset({"github.com", "www.github.com"})
 DELAYS = (2, 4, 8, 16)
-UA = "moonbase2090-package-link-lint (https://github.com/moonbase2090/.github)"
 
 
-def status_of(url, timeout=30):
-    """The HTTP status for a GET of url after redirects, or None when no answer came."""
-    request = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.status
-    except urllib.error.HTTPError as error:
-        error.close()
-        return error.code
-    except (urllib.error.URLError, OSError):
-        return None
+def lychee_check(command, url):
+    """Check one URL with the lychee command: PASSED, its failing HTTP status, or None.
 
-
-def recheck(statuses, delays, sleep=time.sleep, fetch=status_of):
-    """Ask again for every URL whose status is transient, one round per delay.
-
-    `statuses` maps URL to the status lychee saw; the result maps URL to the last
-    status seen. A URL leaves the rounds as soon as it gives a non-transient answer.
+    None means no answer (network error or timeout) or that the command did not check
+    the URL, for example because it is excluded.
     """
-    result = dict(statuses)
-    pending = [url for url, status in result.items() if status in TRANSIENT]
+    with tempfile.TemporaryDirectory() as work:
+        page = os.path.join(work, "recheck.md")
+        out = os.path.join(work, "recheck.json")
+        with open(page, "w", encoding="utf-8") as f:
+            f.write(f"<{url}>\n")
+        proc = subprocess.run([*command, "--format", "json", "--output", out, "--", page],
+                              capture_output=True, text=True)
+        # lychee exits 2 for failed links and also for a usage error, which writes no report.
+        if proc.returncode not in (0, 2) or not os.path.exists(out):
+            raise RuntimeError(f"lychee exited {proc.returncode}: {proc.stderr.strip()}")
+        with open(out, encoding="utf-8") as f:
+            report = json.load(f)
+    for _, _, code, _ in entries(report):
+        return code
+    if proc.returncode == 0 and report.get("total") == 1 and not report.get("excludes"):
+        return PASSED
+    return None
+
+
+def recheck(urls, delays, check, sleep=time.sleep):
+    """Ask again for every URL, one round per delay; map each URL to its last result.
+
+    A URL leaves the rounds once it passes or gives a status that is not transient.
+    """
+    result = {url: None for url in urls}
+    pending = list(urls)
     for delay in delays:
         if not pending:
             break
         sleep(delay)
         for url in pending:
-            result[url] = fetch(url)
-        pending = [url for url in pending if result[url] in TRANSIENT or result[url] is None]
+            result[url] = check(url)
+        pending = [url for url in pending if result[url] is None or result[url] in TRANSIENT]
     return result
 
 
@@ -66,25 +81,32 @@ def entries(report):
                 yield source, item["url"], status.get("code"), status.get("text", "")
 
 
-def main(argv, delays=DELAYS, sleep=time.sleep, fetch=status_of, hosts=LENIENT_HOSTS):
-    with open(argv[1], encoding="utf-8") as f:
+def main(argv, delays=DELAYS, sleep=time.sleep, hosts=LENIENT_HOSTS):
+    if len(argv) < 3:
+        print("usage: recheck_links.py REPORT.json LYCHEE [LYCHEE OPTIONS...]", file=sys.stderr)
+        return 2
+    report_path, command = argv[1], argv[2:]
+    if not os.path.exists(report_path):
+        print(f"lychee wrote no report at {report_path}; see its error above", file=sys.stderr)
+        return 1
+    with open(report_path, encoding="utf-8") as f:
         report = json.load(f)
     failed = list(entries(report))
     print(f"lychee: {report.get('total', 0)} links, {len(failed)} failed")
-    transient = {url: code for _, url, code, _ in failed if code in TRANSIENT}
+    transient = sorted({url for _, url, code, _ in failed if code in TRANSIENT})
     if transient:
         print(f"re-checking {len(transient)} link(s) that answered 5xx")
-    final = recheck(transient, delays, sleep, fetch)
+    final = recheck(transient, delays, lambda url: lychee_check(command, url), sleep)
 
     broken = 0
     for source, url, code, text in failed:
-        if url not in final:
+        if code not in TRANSIENT:
             print(f"[{source}] {url}: {text}")
             broken += 1
             continue
         status = final[url]
-        if status in ALIVE:
-            print(f"[{source}] {url}: answered {status} on a later try (first {code})")
+        if status == PASSED:
+            print(f"[{source}] {url}: passed on a later try (first {code})")
         elif status in TRANSIENT and lenient(url, hosts):
             print(f"::warning::{source}: {url} still answers {status} from GitHub; counted as alive")
         else:
